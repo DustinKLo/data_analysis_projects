@@ -1,0 +1,246 @@
+---
+title: "BST Project"
+author: "Dustin Lo"
+date: "Sunday, May 10, 2015"
+output: pdf_document
+---
+
+
+```{r}
+setwd("C:/Users/Dustin K. Lo/Desktop/BST test")
+d <- read.csv("dataCSV.csv", header = T, stringsAsFactors = F)
+d[d == "#NULL!"] <- NA
+d <- na.omit(d)
+
+for(i in c(63,65,66,68:71)) { #changes columns into numeric
+  d[,i] <- as.numeric(d[,i])
+}
+
+d <- d[, -2]
+
+for(i in c(4,5,10,11,12, 13:17)) { #changes columns into factor
+  d[,i] <- factor(d[,i])
+}
+```
+
+
+Order table by Project ID
+```{r}
+dav <- d
+dav <- dav[-c(1:nrow(dav)), ]
+
+n <- sort(unique(d$ProjectID))
+for(i in 1:length(sort(unique(d$ProjectID)))) {
+  sub <- d[which(d$ProjectID == n[i]), ]
+  dav <- rbind(dav, sub)
+}
+# write.csv(dav, "bst.csv")
+```
+
+
+```{r}
+########################################################
+dav <- dav[which(dav$Industry_Groups == "Chemicals"), ]
+#########################################################
+
+#subsetting the dataset 75/25
+#the 75% is for modeling and the 25% is for predictive analysis
+keep <- function(x, seed) {
+  set.seed(seed)
+  k <- sort(sample(1:nrow(x), size = round(nrow(x)*.80), replace = F, prob = NULL))
+  return(k)
+}
+in.index<- keep(dav, 10261991)
+din <- dav[in.index,]
+dout <- dav[-in.index,]
+
+```
+
+
+```{r}
+#choosing stronger variables with our injury binary variable
+cors <- cor(din[, sapply(din, is.numeric)], method = "pearson")
+cors <- cors[-c(51,53:56), -c(51,53:56)]
+strong <- which(abs(cors[,51]) > 0.05)
+cors <- cors[strong, strong]
+
+#ProcedureHotRiskRate_perFTE is bad!!!
+# subsetting the table to match our variables chosen in our correlation table
+use <- din[, match(row.names(cors), colnames(din))]
+use <- use[, -c(2,3,29,30)]
+use$ProcedureHotRiskRate_perFTE <- NULL
+#running a linear model in all variables chosen from correlation table
+m <- glm(InjuryYN_Lag1 ~ . , data = use, family = "binomial") 
+#summary(m)
+
+```
+
+
+```{r, results='hide'}
+#library(MASS)
+#stepAIC(m, direction = "both", k = 10)
+```
+
+```{r}
+#sqrt transform SumRisks
+m1 <- glm(formula = InjuryYN_Lag1 ~ ObsRate_perFTE + sqrt(SumRisks) + ContractorEERate_perObs, 
+          family = "binomial", data = use)
+summary(m1)
+
+#Ho = model is a good fit for data
+#Ha = model is bad fit for data
+pchisq(632.25,  594)
+# 0.865 so we reject the null
+
+#checking for the fit of our model
+library(alr3)
+mmps(m1)
+#good fit
+```
+
+
+```{r}
+#testing the numerical model out
+attach(din)
+input1 <- data.frame(SumRisks = rep(round(mean(SumRisks)), 50), ObsRate_perFTE = seq(from = 0, to = 3, length.out = 50), 
+                    ContractorEERate_perObs = rep(0.1327, 50)) 
+input1 <- cbind(input1, Prob = predict(m1, input1, type = "response", se = TRUE))
+input1$Prob.residual.scale <- NULL
+detach(din)
+upper <- round(input1$Prob.fit + 1.96 * input1$Prob.se.fit, 4)
+lower <- round(input1$Prob.fit - 1.96 * input1$Prob.se.fit, 4)
+output1 <- cbind(input1, lower, upper)
+
+exp(coef(m1))
+# Change in Odds per change in input1 variables 
+#(Intercept)          ObsRate_perFTE          sqrt(SumRisks) ContractorEERate_perObs 
+#0.2534387               0.4050276               1.1699455               0.1702086 
+
+confint(m1)
+#                           2.5 %     97.5 %
+#  (Intercept)           -1.83284758 -0.9179411
+#ObsRate_perFTE          -1.40852093 -0.4402804
+#sqrt(SumRisks)           0.09888288  0.2179332
+#ContractorEERate_perObs -3.03623340 -0.6422850
+
+head(output1[,-6])
+
+library(ggplot2)
+ggplot(output1, aes(x = ObsRate_perFTE, y = Prob.fit)) + geom_line(col = "blue") + 
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2)
+
+with(m1, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+# 4.865744e-13
+# very low p-value, shows that our model fits better than an empty model
+```
+
+
+```{r}
+# checking for interaction terms
+# InjuryYN_Lag1   ObsRate_perFTE   sqrt(SumRisks)   ContractorEERate_perObs
+dcat <- din[, !sapply(din, is.numeric)]
+dcat <- dcat[, -c(3,4,5,14)]
+dcat <- dcat[, -c(10,9,8,2,3,4)]
+str(dcat)
+
+attach(din)
+table(InjuryYN_Lag1, CoachedObs_YN)
+table(InjuryYN_Lag1,Employee_TypeContractor_YN)
+# CoachedObs_YN looks like a better factor variable than Employee_TypeContractor_YN
+par(mfrow = c(2,2))
+interaction.plot(sqrt(SumRisks), CoachedObs_YN, InjuryYN_Lag1, type = "p",
+                 pch = 1, col = c(1,2)) 
+#some interaction between sqrt(SumRisks), CoachedObs_YN
+interaction.plot(ObsRate_perFTE, CoachedObs_YN, InjuryYN_Lag1, type = "p",
+                 pch = 1, col = c(1,2))
+#some interaction between ObsRate_perFTE, CoachedObs_YN
+interaction.plot(ContractorEERate_perObs, CoachedObs_YN, InjuryYN_Lag1, type = "p",
+                 pch = 1, col = c(1,2))
+# little to no interaction
+par(mfrow = c(1,1))
+detach(din)
+```
+
+
+```{r}
+#our final model
+#modeling with interaction terms
+final <- glm(formula = InjuryYN_Lag1 ~ ObsRate_perFTE + sqrt(SumRisks) +  
+              ContractorEERate_perObs + sqrt(SumRisks):CoachedObs_YN, family = "binomial", data = din)
+summary(final)
+mmps(final)
+
+#Ho: model is good fit for data
+#Ha: model is bad fit for data
+pchisq(616.85,  593)
+# 0.758898, reject null, so good fit
+
+with(final, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE))
+#low p-value, so our model is better than an empty model
+```
+
+
+testing our final model out with ObsRate_perFTE
+```{r}
+attach(din)
+input2 <- data.frame(SumRisks = rep(round(mean(SumRisks)), 100), 
+                     ObsRate_perFTE = rep(seq(from = 0, to = 3, length.out = 50), times = 2), 
+                     ContractorEERate_perObs = rep(0.1327, 100),
+                     CoachedObs_YN = factor(rep(c(0,1), times = 1, each = 50)))
+input2 <- cbind(input2, Prob = predict(final, input2, type = "response", se = TRUE))
+input2$Prob.residual.scale <- NULL
+detach(din)
+upper <- round(input2$Prob.fit + 1.96 * input2$Prob.se.fit, 4)
+lower <- round(input2$Prob.fit - 1.96 * input2$Prob.se.fit, 4)
+output2 <- cbind(input2, lower, upper)
+
+head(output2[1:50,-6])
+head(output2[50:100,-6])
+
+ggplot(output2, aes(x = ObsRate_perFTE, y = Prob.fit)) + geom_line(aes(color = factor(CoachedObs_YN))) +
+  geom_ribbon(aes(fill = factor(CoachedObs_YN), ymin = lower, ymax = upper), alpha = 0.2) +
+  labs(x = "sqrt(SumRisks)")
+```
+
+
+testing our final model out with SumRisks
+```{r}
+attach(din)
+input3 <- data.frame(SumRisks = rep(seq(from = 0, to = 125, length.out = 50), times = 2), 
+                     ObsRate_perFTE = rep(mean(ObsRate_perFTE), 100), 
+                     ContractorEERate_perObs = rep(0.1327, 100),
+                     CoachedObs_YN = factor(rep(c(0,1), times = 1, each = 50)))
+input3 <- cbind(input3, Prob = predict(final, input3, type = "response", se = TRUE))
+input3$Prob.residual.scale <- NULL
+detach(din)
+upper <- round(input3$Prob.fit + 1.96 * input3$Prob.se.fit, 4)
+lower <- round(input3$Prob.fit - 1.96 * input3$Prob.se.fit, 4)
+output3 <- cbind(input3, lower, upper)
+
+head(output3[1:50,-6])
+head(output3[50:100,-6])
+
+ggplot(output3, aes(x = SumRisks, y = Prob.fit)) + geom_line(aes(color = factor(CoachedObs_YN))) +
+  geom_ribbon(aes(fill = factor(CoachedObs_YN), ymin = lower, ymax = upper), alpha = 0.2)
+```
+
+
+testing our final model out with ContractorEERate_perObs
+```{r}
+attach(din)
+input4 <- data.frame(SumRisks = rep(round(mean(SumRisks)), 100), 
+                     ObsRate_perFTE = rep(mean(ObsRate_perFTE), 100), 
+                     ContractorEERate_perObs = rep(seq(from = 0, to = .75, length.out = 50), times = 2),
+                     CoachedObs_YN = factor(rep(c(0,1), times = 1, each = 50)))
+input4 <- cbind(input4, Prob = predict(final, input4, type = "response", se = TRUE))
+input4$Prob.residual.scale <- NULL
+detach(din)
+upper <- round(input4$Prob.fit + 1.96 * input4$Prob.se.fit, 4)
+lower <- round(input4$Prob.fit - 1.96 * input4$Prob.se.fit, 4)
+output4 <- cbind(input4, lower, upper)
+head(output4[1:50,-6])
+head(output4[50:100,-6])
+ggplot(output4, aes(x = ContractorEERate_perObs, y = Prob.fit)) + geom_line(aes(color = factor(CoachedObs_YN))) +
+  geom_ribbon(aes(fill = factor(CoachedObs_YN), ymin = lower, ymax = upper), alpha = 0.3)
+```
+
